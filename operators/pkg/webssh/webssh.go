@@ -1,13 +1,33 @@
+// Copyright 2025-2030 Politecnico di Torino
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Package webssh provides a WebSocket-based SSH bridge for CrownLabs instances.
+// It allows users to connect to their VMs via SSH using a web interface.
 package webssh
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,17 +42,16 @@ import (
 	"k8s.io/client-go/rest"
 )
 
-type Config struct {
+type config struct {
 	SSHUser            string
 	PrivateKeyPath     string
 	TimeoutDuration    int // Duration in seconds
 	MaxConnectionCount int
 	WebsocketPort      string
-	VmSSHPort          string // Default SSH port for VMs, can be overridden in the ClientInitMessage
+	VMSSHPort          string // Default SSH port for VMs, can be overridden in the clientInitMessage
 }
 
-func LoadConfig() *Config {
-
+func loadConfig() *config {
 	vmPort := os.Getenv("WEBSSH_VM_PORT")
 	if vmPort == "" {
 		vmPort = "22"
@@ -76,13 +95,13 @@ func LoadConfig() *Config {
 		log.Println("WEBSSH_WEBSOCKET_PORT environment variable is not set, using default value: ", websocketPort)
 	}
 
-	return &Config{
+	return &config{
 		SSHUser:            SSHUser,
 		PrivateKeyPath:     privateKeyPath,
 		TimeoutDuration:    timeout * 60, // Convert minutes to seconds
 		MaxConnectionCount: maxConn,
 		WebsocketPort:      websocketPort,
-		VmSSHPort:          vmPort,
+		VMSSHPort:          vmPort,
 	}
 }
 
@@ -94,6 +113,8 @@ type sshConnInfo struct {
 var (
 	upgrader = websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
+			// TODO: Implement proper origin checking if needed
+			_ = r // Ignore the request, we don't need to check the origin in this case
 			return true
 		},
 	}
@@ -102,10 +123,10 @@ var (
 	connMutex         sync.Mutex // Mutex to protect access to activeConnections
 )
 
-type ClientInitMessage struct {
+type clientInitMessage struct {
 	Token  string `json:"token"`
-	VmIp   string `json:"vmIp"`
-	VmPort string `json:"vmPort"` // Optional, can be used to specify a different port
+	VMIP   string `json:"vmIp"`
+	VMPort string `json:"vmPort"` // Optional, can be used to specify a different port
 }
 
 func extractUsernameFromToken(tokenString string) (string, error) {
@@ -115,7 +136,6 @@ func extractUsernameFromToken(tokenString string) (string, error) {
 		return "", err
 	}
 	if claims, ok := token.Claims.(jwt.MapClaims); ok {
-
 		if username, ok := claims["preferred_username"].(string); ok {
 			return username, nil
 		}
@@ -123,7 +143,7 @@ func extractUsernameFromToken(tokenString string) (string, error) {
 	return "", errors.New("username not found in token claims")
 }
 
-func getInstances(token string, namespace string) (map[string]any, error) {
+func getInstances(token, namespace string) (map[string]any, error) {
 	// create the Kubernetes client configuration
 	config := &rest.Config{
 		Host:        "https://apiserver.crownlabs.polito.it",
@@ -159,15 +179,14 @@ func getInstances(token string, namespace string) (map[string]any, error) {
 	return instances, nil
 }
 
-func validateRequest(firstMsg []byte) (ClientInitMessage, error) {
-
-	var initMsg ClientInitMessage
+func validateRequest(firstMsg []byte) (clientInitMessage, error) {
+	var initMsg clientInitMessage
 	if err := json.Unmarshal(firstMsg, &initMsg); err != nil {
 		log.Println("Invalid JSON from client:", err)
 		return initMsg, errors.New("invalid JSON format")
 	}
 
-	if initMsg.VmIp == "" || initMsg.Token == "" {
+	if initMsg.VMIP == "" || initMsg.Token == "" {
 		log.Println("Missing required fields in the initialization message")
 		return initMsg, errors.New("missing required fields in the initialization message")
 	}
@@ -193,7 +212,6 @@ func validateRequest(firstMsg []byte) (ClientInitMessage, error) {
 	// check if the requested VM IP is in the list of instances
 	found := false
 	for _, i := range instances {
-
 		instanceMap, ok := i.(map[string]any)
 		if !ok {
 			log.Println("Instance data is not in the expected format")
@@ -211,7 +229,7 @@ func validateRequest(firstMsg []byte) (ClientInitMessage, error) {
 
 		log.Println("IP:", ip)
 
-		if ip == initMsg.VmIp {
+		if ip == initMsg.VMIP {
 			found = true
 			log.Printf("Found instance with IP: %s in namespace: %s", ip, namespace)
 			break
@@ -219,58 +237,76 @@ func validateRequest(firstMsg []byte) (ClientInitMessage, error) {
 	}
 
 	if !found {
-		log.Printf("No instance found for VM IP: %s in namespace: %s", initMsg.VmIp, namespace)
+		log.Printf("No instance found for VM IP: %s in namespace: %s", initMsg.VMIP, namespace)
 		return initMsg, errors.New("no instance found for the provided VM IP")
 	}
 
 	return initMsg, nil
 }
 
-func loadPrivateKey(path string) (ssh.Signer, error) {
-	key, err := os.ReadFile(path)
+func loadPrivateKey(path string) (ssh.Signer, string, error) {
+	cleanPath := filepath.Clean(path)
+	keyPriv, err := os.ReadFile(cleanPath)
 	if err != nil {
-		log.Printf("Error reading private key file at %s: %v", path, err)
-		return nil, err
+		log.Printf("Error reading private key file at %s: %v", cleanPath, err)
+		return nil, "", err
 	}
-	return ssh.ParsePrivateKey(key)
+
+	kPubPath := path + ".pub"
+	kPubPathClean := filepath.Clean(kPubPath)
+	keyPub, err := os.ReadFile(kPubPathClean)
+	if err != nil {
+		log.Printf("Error reading public key file at %s: %v", kPubPathClean, err)
+		return nil, "", err
+	}
+
+	signer, err := ssh.ParsePrivateKey(keyPriv)
+	if err != nil {
+		log.Printf("Error parsing private key: %v", err)
+		return nil, "", err
+	}
+
+	return signer, string(keyPub), nil
 }
 
-func updateSSHConnectionLastUsed(vmIp string) {
+func updateSSHConnectionLastUsed(vmIP string) {
 	connMutex.Lock()
 	defer connMutex.Unlock()
-	if info, exists := activeConnections[vmIp]; exists {
+	if info, exists := activeConnections[vmIP]; exists {
 		info.lastUsed = time.Now()
 	}
 }
 
-func closeSSHConnection(vmIp string) {
+func closeSSHConnection(vmIP string) {
 	var connToClose *ssh.Client
 
 	// Remove the connection from activeConnections map
 	connMutex.Lock()
-	if info, exists := activeConnections[vmIp]; exists {
+	if info, exists := activeConnections[vmIP]; exists {
 		connToClose = info.conn
-		delete(activeConnections, vmIp) // Remove from active connections
-		log.Printf("Closed SSH connection to %s", vmIp)
+		delete(activeConnections, vmIP) // Remove from active connections
+		log.Printf("Closed SSH connection to %s", vmIP)
 	} else {
-		log.Printf("No active SSH connection found for %s", vmIp)
+		log.Printf("No active SSH connection found for %s", vmIP)
 	}
 	connMutex.Unlock()
 
 	// Close the SSH connection outside the lock to to slow down contention
 	if connToClose != nil {
-		connToClose.Close() // Close the SSH connection outside the lock
+		if err := connToClose.Close(); err != nil {
+			log.Printf("failed to close SSH connection: %v", err)
+		}
 	}
 }
 
-func getOrCreateSSHConnection(vmIp string, sshConfig *ssh.ClientConfig, maxConnCount int) (*ssh.Client, error) {
+func getOrCreateSSHConnection(VmIP string, sshConfig *ssh.ClientConfig, maxConnCount int) (*ssh.Client, error) {
 	connMutex.Lock()
 	defer connMutex.Unlock()
 
 	// Check if the connection already exists
-	if info, exists := activeConnections[vmIp]; exists {
+	if info, exists := activeConnections[VmIP]; exists {
 		info.lastUsed = time.Now()
-		log.Printf("Reusing existing SSH connection to %s", vmIp)
+		log.Printf("Reusing existing SSH connection to %s", VmIP)
 		return info.conn, nil
 	}
 
@@ -281,23 +317,23 @@ func getOrCreateSSHConnection(vmIp string, sshConfig *ssh.ClientConfig, maxConnC
 	}
 
 	// If not, create a new SSH connection
-	conn, err := ssh.Dial("tcp", vmIp, sshConfig)
+	conn, err := ssh.Dial("tcp", VmIP, sshConfig)
 	if err != nil {
 		return nil, err
 	}
 
 	// Save the new connection in the map
-	activeConnections[vmIp] = &sshConnInfo{
+	activeConnections[VmIP] = &sshConnInfo{
 		conn:     conn,
 		lastUsed: time.Now(),
 	}
 
-	log.Printf("New SSH connection established to %s", vmIp)
+	log.Printf("New SSH connection established to %s", VmIP)
 
 	return conn, nil
 }
 
-func startConnectionCleanup(interval time.Duration, timeout time.Duration) {
+func startConnectionCleanup(interval, timeout time.Duration) {
 	go func() {
 		for {
 			time.Sleep(interval)
@@ -320,8 +356,13 @@ func startConnectionCleanup(interval time.Duration, timeout time.Duration) {
 	}()
 }
 
-func wsHandler(w http.ResponseWriter, r *http.Request, config *Config) {
+func returnError(ws *websocket.Conn, errMsg string) {
+	if err := ws.WriteMessage(websocket.TextMessage, []byte(errMsg)); err != nil {
+		log.Println("WebSocket write error:", err)
+	}
+}
 
+func wsHandler(w http.ResponseWriter, r *http.Request, config *config) {
 	// upgrade to the WebSocket
 	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -330,7 +371,9 @@ func wsHandler(w http.ResponseWriter, r *http.Request, config *Config) {
 	}
 
 	defer func() {
-		ws.Close()
+		if err := ws.Close(); err != nil {
+			log.Printf("failed to close ws connection: %v", err)
+		}
 	}()
 
 	// Validate the req
@@ -338,29 +381,29 @@ func wsHandler(w http.ResponseWriter, r *http.Request, config *Config) {
 	_, firstMsg, err := ws.ReadMessage()
 	if err != nil {
 		log.Println("ReadMessage error:", err)
-		ws.WriteMessage(websocket.TextMessage, []byte("Error reading initial message"))
+		returnError(ws, "Error reading initial message")
 		return
 	}
 
 	initMsg, err := validateRequest(firstMsg)
 	if err != nil {
 		log.Println("Request validation failed:", err)
-		ws.WriteMessage(websocket.TextMessage, []byte("Invalid request"))
+		returnError(ws, "Invalid request")
 		return
 	}
 
 	// Construct the SSH connection string
-	port := initMsg.VmPort
+	port := initMsg.VMPort
 	if port == "" {
-		port = config.VmSSHPort // Default port if not specified
+		port = config.VMSSHPort // Default port if not specified
 	}
-	connString := initMsg.VmIp + ":" + port // ip:port
+	connString := initMsg.VMIP + ":" + port // ip:port
 
 	// Load the private key for SSH authentication
-	signer, err := loadPrivateKey(config.PrivateKeyPath)
+	signer, kPub, err := loadPrivateKey(config.PrivateKeyPath)
 	if err != nil {
 		log.Println("Failed to load private key:", err)
-		ws.WriteMessage(websocket.TextMessage, []byte("Interal server error"))
+		returnError(ws, "Interal server error")
 		return
 	}
 
@@ -369,21 +412,30 @@ func wsHandler(w http.ResponseWriter, r *http.Request, config *Config) {
 		Auth: []ssh.AuthMethod{
 			ssh.PublicKeys(signer),
 		},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // should be the case to replace it?
-		Timeout:         10 * time.Second,
+		HostKeyCallback: func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+			expected, _, _, _, err := ssh.ParseAuthorizedKey([]byte(kPub))
+			if err != nil {
+				return fmt.Errorf("failed to parse known host key: %v", err)
+			}
+			if bytes.Equal(key.Marshal(), expected.Marshal()) {
+				return nil
+			}
+			return fmt.Errorf("host key mismatch")
+		},
+		Timeout: 10 * time.Second,
 	}
 
 	sshConn, err := getOrCreateSSHConnection(connString, sshConfig, config.MaxConnectionCount)
 	if err != nil {
 		log.Println("Failed to get or create SSH connection:", err)
-		ws.WriteMessage(websocket.TextMessage, []byte("Failed to connect to SSH server"))
+		returnError(ws, "Failed to connect to the SSH server")
 		return
 	}
 
 	session, err := sshConn.NewSession()
 	if err != nil {
 		log.Println("Failed to create SSH session:", err)
-		ws.WriteMessage(websocket.TextMessage, []byte("Internal server error"))
+		returnError(ws, "Internal server error")
 		return
 	}
 	defer session.Close()
@@ -396,26 +448,26 @@ func wsHandler(w http.ResponseWriter, r *http.Request, config *Config) {
 
 	if err := session.RequestPty("xterm", 40, 80, modes); err != nil {
 		log.Println("Request for pseudo terminal failed:", err)
-		ws.WriteMessage(websocket.TextMessage, []byte("Internal server error"))
+		returnError(ws, "Internal server error")
 		return
 	}
 
 	stdin, err := session.StdinPipe()
 	if err != nil {
 		log.Println("Unable to setup stdin for session:", err)
-		ws.WriteMessage(websocket.TextMessage, []byte("Internal server error"))
+		returnError(ws, "Internal server error")
 		return
 	}
 	stdout, err := session.StdoutPipe()
 	if err != nil {
 		log.Println("Unable to setup stdout for session:", err)
-		ws.WriteMessage(websocket.TextMessage, []byte("Internal server error"))
+		returnError(ws, "Internal server error")
 		return
 	}
 
 	if err := session.Shell(); err != nil {
 		log.Println("Failed to start shell:", err)
-		ws.WriteMessage(websocket.TextMessage, []byte("Internal server error"))
+		returnError(ws, "Internal server error")
 		return
 	}
 
@@ -454,23 +506,35 @@ func wsHandler(w http.ResponseWriter, r *http.Request, config *Config) {
 	}
 }
 
-func wsHandlerWrapper(config *Config) http.HandlerFunc {
+func wsHandlerWrapper(config *config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		wsHandler(w, r, config)
 	}
 }
 
+// StartWebSSH initializes the WebSocket SSH bridge server.
+// It loads the configuration, sets up the HTTP server, and starts listening for WebSocket connections.
 func StartWebSSH() {
 	// Load configuration from environment variables
-	config := LoadConfig()
+	config := loadConfig()
 
 	// automatic Cleanup
 	startConnectionCleanup(2*time.Minute, time.Duration(config.TimeoutDuration)*time.Second)
 
-	http.HandleFunc("/ws", wsHandlerWrapper(config))
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", wsHandlerWrapper(config))
+
 	log.Println("WebSocket SSH bridge running on :" + config.WebsocketPort)
-	err := http.ListenAndServe(":"+config.WebsocketPort, nil)
-	if err != nil {
-		log.Fatal("ListenAndServe:", err)
+
+	server := &http.Server{
+		Addr:         ":" + config.WebsocketPort,
+		Handler:      mux,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
+
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Fatalf("HTTP server failed: %v", err)
 	}
 }

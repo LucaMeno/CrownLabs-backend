@@ -47,7 +47,6 @@ func init() {
 }
 
 func main() {
-
 	// Start the WebSocket SSH bridge in a separate goroutine
 	go func() {
 		klog.Info("Starting WebSocket SSH bridge")

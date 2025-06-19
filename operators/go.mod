@@ -2,8 +2,6 @@ module github.com/netgroup-polito/CrownLabs/operators
 
 go 1.23.0
 
-toolchain go1.23.7
-
 require (
 	github.com/Nerzal/gocloak/v7 v7.11.0
 	github.com/dgrijalva/jwt-go/v4 v4.0.0-preview1

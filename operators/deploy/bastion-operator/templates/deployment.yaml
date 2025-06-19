@@ -79,17 +79,17 @@ spec:
             {{- toYaml .Values.resources.sidecar | nindent 12 }}
           env:
           - name: WEBSSH_USER
-            value: {{ .Values.webssh.webSshUser | quote }}
+            value: {{ .Values.webSshConfig.webSshUser | quote }}
           - name: WEBSSH_PRIVATE_KEY_PATH
-            value: {{ .Values.webssh.webSshPrivateKeyPath | quote }}
+            value: {{ .Values.webSshConfig.webSshPrivateKeyPath | quote }}
           - name: WEBSSH_TIMEOUT_DURATION
-            value: {{ .Values.webssh.webSshTimeoutDuration | quote }}
+            value: {{ .Values.webSshConfig.webSshTimeoutDuration | quote }}
           - name: WEBSSH_MAX_CONN_COUNT
-            value: {{ .Values.webssh.WebSshMaxConCount | quote }}
+            value: {{ .Values.webSshConfig.WebSshMaxConCount | quote }}
           - name: WEBSSH_VM_PORT
-            value: {{ .Values.webssh.WebSshVmPort | quote }}
+            value: {{ .Values.webSshConfig.WebSshVmPort | quote }}
           - name: WEBSSH_WEBSOCKET_PORT
-            value: {{ .Values.webssh.WebSshWebskPort | quote }}
+            value: {{ .Values.webSshConfig.WebSshWebskPort | quote }}
       volumes:
         - name: authorized-keys
           emptyDir: {}
