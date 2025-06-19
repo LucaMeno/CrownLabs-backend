@@ -17,14 +17,11 @@
 package webssh
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -244,29 +241,15 @@ func validateRequest(firstMsg []byte) (clientInitMessage, error) {
 	return initMsg, nil
 }
 
-func loadPrivateKey(path string) (ssh.Signer, string, error) {
+func loadPrivateKey(path string) (ssh.Signer, error) {
 	cleanPath := filepath.Clean(path)
 	keyPriv, err := os.ReadFile(cleanPath)
 	if err != nil {
 		log.Printf("Error reading private key file at %s: %v", cleanPath, err)
-		return nil, "", err
+		return nil, err
 	}
 
-	kPubPath := path + ".pub"
-	kPubPathClean := filepath.Clean(kPubPath)
-	keyPub, err := os.ReadFile(kPubPathClean)
-	if err != nil {
-		log.Printf("Error reading public key file at %s: %v", kPubPathClean, err)
-		return nil, "", err
-	}
-
-	signer, err := ssh.ParsePrivateKey(keyPriv)
-	if err != nil {
-		log.Printf("Error parsing private key: %v", err)
-		return nil, "", err
-	}
-
-	return signer, string(keyPub), nil
+	return ssh.ParsePrivateKey(keyPriv)
 }
 
 func updateSSHConnectionLastUsed(vmIP string) {
@@ -400,7 +383,7 @@ func wsHandler(w http.ResponseWriter, r *http.Request, config *config) {
 	connString := initMsg.VMIP + ":" + port // ip:port
 
 	// Load the private key for SSH authentication
-	signer, kPub, err := loadPrivateKey(config.PrivateKeyPath)
+	signer, err := loadPrivateKey(config.PrivateKeyPath)
 	if err != nil {
 		log.Println("Failed to load private key:", err)
 		returnError(ws, "Interal server error")
@@ -412,17 +395,8 @@ func wsHandler(w http.ResponseWriter, r *http.Request, config *config) {
 		Auth: []ssh.AuthMethod{
 			ssh.PublicKeys(signer),
 		},
-		HostKeyCallback: func(hostname string, remote net.Addr, key ssh.PublicKey) error {
-			expected, _, _, _, err := ssh.ParseAuthorizedKey([]byte(kPub))
-			if err != nil {
-				return fmt.Errorf("failed to parse known host key: %v", err)
-			}
-			if bytes.Equal(key.Marshal(), expected.Marshal()) {
-				return nil
-			}
-			return fmt.Errorf("host key mismatch")
-		},
-		Timeout: 10 * time.Second,
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         10 * time.Second,
 	}
 
 	sshConn, err := getOrCreateSSHConnection(connString, sshConfig, config.MaxConnectionCount)
@@ -438,7 +412,12 @@ func wsHandler(w http.ResponseWriter, r *http.Request, config *config) {
 		returnError(ws, "Internal server error")
 		return
 	}
-	defer session.Close()
+
+	defer func() {
+		if err := session.Close(); err != nil {
+			log.Printf("failed to close SSH session: %v", err)
+		}
+	}()
 
 	modes := ssh.TerminalModes{
 		ssh.ECHO:          1,
