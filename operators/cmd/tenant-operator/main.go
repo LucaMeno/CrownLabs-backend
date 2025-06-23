@@ -158,6 +158,26 @@ func main() {
 			MutatingWebhookPath,
 			tenantwh.MakeTenantMutator(mgr.GetClient(), webhookBypassGroupsList, targetLabelKey, targetLabelValue, baseWorkspacesList, mgr.GetScheme()),
 		)
+		ctrl.NewWebhookManagedBy(mgr).
+			For(&clv1alpha2.Tenant{}).
+			WithValidator(&tenantwh.TenantValidator{
+				TenantWebhook: tenantwh.TenantWebhook{
+					Client:       mgr.GetClient(),
+					BypassGroups: webhookBypassGroupsList}}).
+			WithCustomPath(ValidatingWebhookPath).
+			Complete()
+
+		ctrl.NewWebhookManagedBy(mgr).
+			For(&clv1alpha2.Tenant{}).
+			WithDefaulter(&tenantwh.TenantMutator{
+				TenantWebhook: tenantwh.TenantWebhook{
+					Client:       mgr.GetClient(),
+					BypassGroups: webhookBypassGroupsList},
+				opSelectorKey:   targetLabelKey,
+				opSelectorValue: targetLabelValue,
+				baseWorkspaces:  baseWorkspacesList}).
+			WithCustomPath(MutatingWebhookPath).
+			Complete()
 	} else {
 		log.Info("Webhook set up: operation skipped")
 	}

@@ -153,10 +153,13 @@ func (r *InstanceTerminationReconciler) CheckInstanceTermination(ctx context.Con
 	}
 
 	instance.Status.Automation.LastCheckTime = metav1.Now()
-	if statusCode == http.StatusOK {
+	switch statusCode {
+	case http.StatusOK:
 		instance.Status.Automation.TerminationTime = metav1.Time{Time: statusCheckReponse.Deadline}
-	} else if statusCode == http.StatusNotFound {
+	case http.StatusNotFound:
 		instance.Status.Automation.TerminationTime = metav1.Now()
+	default:
+		log.Error(fmt.Errorf("unexpected status code %d, retrieved error='%s'", statusCode, statusCheckReponse.Error), "unexpected status code received")
 	}
 
 	if err := r.Status().Update(ctx, instance); err != nil {

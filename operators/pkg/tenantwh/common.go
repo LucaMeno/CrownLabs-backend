@@ -30,7 +30,6 @@ import (
 // TenantWebhook holds data needed by webhooks.
 type TenantWebhook struct {
 	Client       client.Client
-	decoder      *admission.Decoder
 	BypassGroups []string // current ns SAs group: system:serviceaccounts:NAMESPACE
 }
 

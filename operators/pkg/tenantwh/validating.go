@@ -43,11 +43,10 @@ const LastLoginToleration = time.Hour * 24
 type TenantValidator struct{ TenantWebhook }
 
 // MakeTenantValidator creates a new webhook handler suitable for controller runtime based on TenantValidator.
-func MakeTenantValidator(c client.Client, webhookBypassGroups []string, scheme *runtime.Scheme) *webhook.Admission {
+func MakeTenantValidator(c client.Client, webhookBypassGroups []string) *webhook.Admission {
 	return &webhook.Admission{Handler: &TenantValidator{TenantWebhook{
 		Client:       c,
 		BypassGroups: webhookBypassGroups,
-		decoder:      admission.NewDecoder(scheme),
 	}}}
 }
 
@@ -219,4 +218,84 @@ func mapFromWorkspacesList(tenant *clv1alpha2.Tenant) map[string]clv1alpha2.Work
 	}
 
 	return wss
+}
+
+func (tv *TenantValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+
+	tenant, ok := obj.(*clv1alpha2.Tenant)
+	if !ok {
+		return nil, fmt.Errorf("expected a Tenant object, got %T", obj)
+	}
+
+	log := ctrl.LoggerFrom(ctx).WithValues("tenant", tenant.Name, "Operation", "Create")
+
+	if tenant.Spec.LastLogin.IsZero() {
+		tenant.Spec.LastLogin = metav1.Now()
+	}
+
+	if len(tenant.Spec.PublicKeys) == 0 {
+		return nil, fmt.Errorf("at least one public key must be provided")
+	}
+	if len(tenant.Spec.Workspaces) == 0 {
+		return nil, fmt.Errorf("at least one workspace must be provided")
+	}
+
+	log.Info("allowed")
+	return nil, nil
+}
+
+func (tv *TenantValidator) ValidateUpdate(ctx context.Context, newObj, oldObj runtime.Object) (admission.Warnings, error) {
+
+	newTenant, ok := newObj.(*clv1alpha2.Tenant)
+	if !ok {
+		return nil, fmt.Errorf("expected a Tenant object, got %T", newObj)
+	}
+	oldTenant, ok := oldObj.(*clv1alpha2.Tenant)
+	if !ok {
+		return nil, fmt.Errorf("expected a Tenant object, got %T", oldObj)
+	}
+
+	log := ctrl.LoggerFrom(ctx).WithValues("tenant", newTenant.Name, "Operation", "Update")
+
+	if newTenant.Spec.LastLogin.IsZero() {
+		newTenant.Spec.LastLogin = metav1.Now()
+	}
+
+	if len(newTenant.Spec.PublicKeys) == 0 {
+		return nil, fmt.Errorf("at least one public key must be provided")
+	}
+	if len(newTenant.Spec.Workspaces) == 0 {
+		return nil, fmt.Errorf("at least one workspace must be provided")
+	}
+	if newTenant.Spec.LastLogin != oldTenant.Spec.LastLogin {
+		lastLoginDelta := time.Until(newTenant.Spec.LastLogin.Time).Abs()
+		if lastLoginDelta > LastLoginToleration {
+			return nil, fmt.Errorf("unacceptable last login time, must be within +/-%v since local server time: %v", LastLoginToleration, time.Now())
+		}
+	}
+	newTenant.Spec.LastLogin = metav1.Time{}
+	oldTenant.Spec.LastLogin = metav1.Time{}
+
+	if !reflect.DeepEqual(newTenant.Spec.PublicKeys, oldTenant.Spec.PublicKeys) {
+		return nil, fmt.Errorf("public keys cannot be changed")
+	}
+	if !reflect.DeepEqual(newTenant.Spec.Workspaces, oldTenant.Spec.Workspaces) {
+		return nil, fmt.Errorf("workspaces cannot be changed")
+	}
+
+	log.Info("allowed")
+	return nil, nil
+}
+
+func (tv *TenantValidator) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+
+	tenant, ok := obj.(*clv1alpha2.Tenant)
+	if !ok {
+		return nil, fmt.Errorf("expected a Tenant object, got %T", obj)
+	}
+
+	log := ctrl.LoggerFrom(ctx).WithValues("tenant", tenant.Name, "Operation", "delete")
+
+	log.Info("allowed")
+	return nil, nil
 }

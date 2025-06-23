@@ -45,6 +45,9 @@ func InitFlags(flagset *flag.FlagSet) {
 // SetRateLimiter configures the rate limiting parameters of the given rest configuration
 // to the values obtained from the command line parameters.
 func SetRateLimiter(cfg *rest.Config) *rest.Config {
+	if burst > ^uint(0)>>1 {
+		panic("burst value exceeds maximum allowed value for int")
+	}
 	return SetRateLimiterWithCustomParamenters(cfg, float32(qps), int(burst))
 }
 
