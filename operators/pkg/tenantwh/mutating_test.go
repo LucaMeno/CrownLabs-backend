@@ -15,22 +15,29 @@
 package tenantwh
 
 import (
-	"net/http"
+	"context"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	admissionv1 "k8s.io/api/admission/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	clv1alpha2 "github.com/netgroup-polito/CrownLabs/operators/api/v1alpha2"
 )
 
+// DummyObject implementa runtime.Object per testare il caso di errore
+type DummyObject struct{}
+
+func (d *DummyObject) GetObjectKind() schema.ObjectKind { return nil }
+func (d *DummyObject) DeepCopyObject() runtime.Object   { return &DummyObject{} }
+
 var _ = Describe("Mutating webhook", func() {
 	var (
-		mutatingWH *TenantMutator
+		mutatingWH *TenantDefaulter
 		request    admission.Request
 
 		opSelectorKey   = "crownlabs.polito.it/op-sel"
@@ -52,40 +59,80 @@ var _ = Describe("Mutating webhook", func() {
 
 	JustBeforeEach(func() {
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-		mutatingWH = MakeTenantMutator(fakeClient, bypassGroups, opSelectorKey, opSelectorValue, baseWorkspaces, scheme).Handler.(*TenantMutator)
-		Expect(mutatingWH.decoder).NotTo(BeNil())
+		mutatingWH = &TenantDefaulter{
+			OpSelectorKey:   opSelectorKey,
+			OpSelectorValue: opSelectorValue,
+			BaseWorkspaces:  baseWorkspaces,
+			Decoder:         admission.NewDecoder(scheme),
+			TenantWebhook: TenantWebhook{
+				Client:       fakeClient,
+				BypassGroups: []string{"system:serviceaccounts:default"},
+			},
+		}
+		Expect(mutatingWH.Decoder).NotTo(BeNil())
 	})
 
-	Describe("The TenantMutator.Handle method", func() {
-		var response, expectedResponse admission.Response
+	Describe("The TenantMutator.Default method", func() {
+		var (
+			tenant *clv1alpha2.Tenant
+			obj    runtime.Object
+			ctx    context.Context
+		)
 
-		JustBeforeEach(func() {
-			response = mutatingWH.Handle(ctx, request)
+		BeforeEach(func() {
+			ctx = context.TODO()
 		})
 
-		When("the request is invalid", func() {
+		Context("when creating a normal tenant", func() {
 			BeforeEach(func() {
-				request = admission.Request{}
+				tenant = forgeTenantWithLabels("test-tenant", nil)
+				obj = tenant
+				request = forgeRequest(admissionv1.Create, tenant, nil)
+				ctx = admission.NewContextWithRequest(ctx, request)
 			})
-
-			It("Should return an error response", func() {
-				Expect(response.Result.Code).To(BeNumerically("==", http.StatusBadRequest))
-				Expect(response.Result.Message).NotTo(BeEmpty())
-				Expect(response.Allowed).To(BeFalse())
+			It("should set the operator selector label and base workspaces", func() {
+				err := mutatingWH.Default(ctx, obj)
+				Expect(err).To(BeNil())
+				labels := tenant.GetLabels()
+				Expect(labels).To(HaveKeyWithValue(opSelectorKey, opSelectorValue))
 			})
 		})
 
-		When("the request is valid", func() {
+		Context("when creating the service tenant", func() {
 			BeforeEach(func() {
-				testTenant := clv1alpha2.Tenant{ObjectMeta: metav1.ObjectMeta{Name: "test-tenant"}}
-				request = forgeRequest(admissionv1.Create, &testTenant, nil)
-				labels, _, _ := mutatingWH.EnforceTenantLabels(ctx, &request, nil)
-				testTenant.SetLabels(labels)
-				expectedResponse = mutatingWH.CreatePatchResponse(ctx, &request, &testTenant)
+				tenant = forgeTenantWithLabels(clv1alpha2.SVCTenantName, map[string]string{opSelectorKey: "should-be-removed"})
+				obj = tenant
+				request = forgeRequest(admissionv1.Create, tenant, nil)
+				ctx = admission.NewContextWithRequest(ctx, request)
 			})
+			It("should not set the operator selector label", func() {
+				err := mutatingWH.Default(ctx, obj)
+				Expect(err).To(BeNil())
+				labels := tenant.GetLabels()
+				Expect(labels[opSelectorKey]).To(Equal(""))
+			})
+		})
 
-			It("Should return a valid response", func() {
-				Expect(response).To(Equal(expectedResponse))
+		Context("when updating a tenant and trying to change the label", func() {
+			BeforeEach(func() {
+				oldTenant := forgeTenantWithLabels("test-tenant", map[string]string{opSelectorKey: "old-value"})
+				tenant = forgeTenantWithLabels("test-tenant", map[string]string{opSelectorKey: "new-value"})
+				obj = tenant
+				request = forgeRequest(admissionv1.Update, tenant, oldTenant)
+				ctx = admission.NewContextWithRequest(ctx, request)
+			})
+			It("should revert the label to the old value", func() {
+				err := mutatingWH.Default(ctx, obj)
+				Expect(err).To(BeNil())
+				labels := tenant.GetLabels()
+				Expect(labels[opSelectorKey]).To(Equal("old-value"))
+			})
+		})
+
+		Context("when passing a non-Tenant object", func() {
+			It("should return an error", func() {
+				err := mutatingWH.Default(ctx, &DummyObject{})
+				Expect(err).ToNot(BeNil())
 			})
 		})
 	})
@@ -95,15 +142,13 @@ var _ = Describe("Mutating webhook", func() {
 			newTenant, oldTenant *clv1alpha2.Tenant
 			operation            admissionv1.Operation
 			expectedLabels       map[string]string
-			expectedWarnings     []string
 			expectedError        error
 			beforeEach           func(*EnforceLabelsCase)
 		}
 
 		var (
-			actualLabels   map[string]string
-			actualWarnings []string
-			actualError    error
+			actualLabels map[string]string
+			actualError  error
 		)
 
 		WhenBody := func(elc EnforceLabelsCase) {
@@ -114,7 +159,7 @@ var _ = Describe("Mutating webhook", func() {
 				}
 			})
 			JustBeforeEach(func() {
-				actualLabels, actualWarnings, actualError = mutatingWH.EnforceTenantLabels(ctx, &request, elc.newTenant.Labels)
+				actualLabels, actualError = mutatingWH.EnforceTenantLabels(ctx, &request, elc.newTenant.Labels)
 			})
 			It("Should return the expected resutls", func() {
 				if elc.expectedError != nil {
@@ -122,7 +167,6 @@ var _ = Describe("Mutating webhook", func() {
 				} else {
 					Expect(actualError).To(BeNil())
 				}
-				Expect(actualWarnings).To(Equal(elc.expectedWarnings))
 				Expect(actualLabels).To(Equal(elc.expectedLabels))
 			})
 		}
@@ -130,10 +174,9 @@ var _ = Describe("Mutating webhook", func() {
 		Context("Operation is create", func() {
 			When("operation is issued against the service tenant", func() {
 				WhenBody(EnforceLabelsCase{
-					operation:        admissionv1.Create,
-					newTenant:        forgeTenantWithLabels(clv1alpha2.SVCTenantName, map[string]string{opSelectorKey: "something-not-nil"}),
-					expectedLabels:   map[string]string{opSelectorKey: ""},
-					expectedWarnings: []string{"operator selector label must not be present on service tenant and has been removed"},
+					operation:      admissionv1.Create,
+					newTenant:      forgeTenantWithLabels(clv1alpha2.SVCTenantName, map[string]string{opSelectorKey: "something-not-nil"}),
+					expectedLabels: map[string]string{opSelectorKey: ""},
 				})
 			})
 
@@ -186,21 +229,19 @@ var _ = Describe("Mutating webhook", func() {
 
 			When("operator selector label change is attempted", func() {
 				WhenBody(EnforceLabelsCase{
-					operation:        admissionv1.Update,
-					newTenant:        forgeTenantWithLabels(testTenantName, forgeOpSelectorMap("invalid")),
-					oldTenant:        forgeTenantWithLabels(testTenantName, forgeOpSelectorMap("some")),
-					expectedLabels:   forgeOpSelectorMap("some"),
-					expectedWarnings: []string{"operator selector label change is prohibited and has been reverted"},
+					operation:      admissionv1.Update,
+					newTenant:      forgeTenantWithLabels(testTenantName, forgeOpSelectorMap("invalid")),
+					oldTenant:      forgeTenantWithLabels(testTenantName, forgeOpSelectorMap("some")),
+					expectedLabels: forgeOpSelectorMap("some"),
 				})
 			})
 
 			When("operator selector label was not present and is added", func() {
 				WhenBody(EnforceLabelsCase{
-					operation:        admissionv1.Update,
-					newTenant:        forgeTenantWithLabels(testTenantName, forgeOpSelectorMap(opSelectorValue)),
-					oldTenant:        forgeTenantWithLabels(testTenantName, nil),
-					expectedLabels:   map[string]string{},
-					expectedWarnings: []string{"operator selector label change is prohibited and has been reverted"},
+					operation:      admissionv1.Update,
+					newTenant:      forgeTenantWithLabels(testTenantName, forgeOpSelectorMap(opSelectorValue)),
+					oldTenant:      forgeTenantWithLabels(testTenantName, nil),
+					expectedLabels: map[string]string{},
 				})
 			})
 
@@ -217,11 +258,10 @@ var _ = Describe("Mutating webhook", func() {
 			When("operator selector label is already present, custom and new val differs", func() {
 				customVal := "custom" + opSelectorValue
 				WhenBody(EnforceLabelsCase{
-					operation:        admissionv1.Update,
-					newTenant:        forgeTenantWithLabels(testTenantName, forgeOpSelectorMap(opSelectorValue)),
-					oldTenant:        forgeTenantWithLabels(testTenantName, forgeOpSelectorMap(customVal)),
-					expectedLabels:   forgeOpSelectorMap(customVal),
-					expectedWarnings: []string{"operator selector label change is prohibited and has been reverted"},
+					operation:      admissionv1.Update,
+					newTenant:      forgeTenantWithLabels(testTenantName, forgeOpSelectorMap(opSelectorValue)),
+					oldTenant:      forgeTenantWithLabels(testTenantName, forgeOpSelectorMap(customVal)),
+					expectedLabels: forgeOpSelectorMap(customVal),
 				})
 			})
 		})

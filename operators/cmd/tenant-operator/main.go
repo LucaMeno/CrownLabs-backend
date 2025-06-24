@@ -32,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	clv1alpha1 "github.com/netgroup-polito/CrownLabs/operators/api/v1alpha1"
 	clv1alpha2 "github.com/netgroup-polito/CrownLabs/operators/api/v1alpha2"
@@ -148,36 +149,31 @@ func main() {
 	}
 
 	if *enableWH {
-		hookServer := mgr.GetWebhookServer()
 		webhookBypassGroupsList := strings.Split(webhookBypassGroups, ",")
-		hookServer.Register(
-			ValidatingWebhookPath,
-			tenantwh.MakeTenantValidator(mgr.GetClient(), webhookBypassGroupsList, mgr.GetScheme()),
-		)
-		hookServer.Register(
-			MutatingWebhookPath,
-			tenantwh.MakeTenantMutator(mgr.GetClient(), webhookBypassGroupsList, targetLabelKey, targetLabelValue, baseWorkspacesList, mgr.GetScheme()),
-		)
-		ctrl.NewWebhookManagedBy(mgr).
+		if err = ctrl.NewWebhookManagedBy(mgr).
 			For(&clv1alpha2.Tenant{}).
 			WithValidator(&tenantwh.TenantValidator{
 				TenantWebhook: tenantwh.TenantWebhook{
 					Client:       mgr.GetClient(),
 					BypassGroups: webhookBypassGroupsList}}).
-			WithCustomPath(ValidatingWebhookPath).
-			Complete()
-
-		ctrl.NewWebhookManagedBy(mgr).
-			For(&clv1alpha2.Tenant{}).
-			WithDefaulter(&tenantwh.TenantMutator{
+			WithValidatorCustomPath(ValidatingWebhookPath).
+			WithDefaulter(&tenantwh.TenantDefaulter{
 				TenantWebhook: tenantwh.TenantWebhook{
 					Client:       mgr.GetClient(),
-					BypassGroups: webhookBypassGroupsList},
-				opSelectorKey:   targetLabelKey,
-				opSelectorValue: targetLabelValue,
-				baseWorkspaces:  baseWorkspacesList}).
-			WithCustomPath(MutatingWebhookPath).
-			Complete()
+					BypassGroups: webhookBypassGroupsList,
+				},
+				OpSelectorKey:   targetLabelKey,
+				OpSelectorValue: targetLabelValue,
+				BaseWorkspaces:  baseWorkspacesList,
+				Decoder:         admission.NewDecoder(mgr.GetScheme()),
+			}).
+			WithDefaulterCustomPath(MutatingWebhookPath).
+			Complete(); err != nil {
+			log.Error(err, "Unable to create mutating webhook", "webhook", "defaulter")
+
+			os.Exit(1)
+		}
+
 	} else {
 		log.Info("Webhook set up: operation skipped")
 	}

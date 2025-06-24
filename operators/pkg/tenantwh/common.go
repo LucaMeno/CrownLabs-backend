@@ -16,9 +16,7 @@ package tenantwh
 
 import (
 	"context"
-	"errors"
 
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -36,16 +34,6 @@ type TenantWebhook struct {
 // CheckWebhookOverride verifies the subject who triggered the request can override the webhooks behavior.
 func (twh *TenantWebhook) CheckWebhookOverride(req *admission.Request) bool {
 	return utils.MatchOneInStringSlices(twh.BypassGroups, req.UserInfo.Groups)
-}
-
-// DecodeTenant decodes the tenant from the incoming request.
-func (twh *TenantWebhook) DecodeTenant(obj runtime.RawExtension) (tenant *clv1alpha2.Tenant, err error) {
-	if twh.decoder == nil {
-		return nil, errors.New("missing decoder")
-	}
-	tenant = &clv1alpha2.Tenant{}
-	err = twh.decoder.DecodeRaw(obj, tenant)
-	return
 }
 
 // GetClusterTenant retrieves the tenant from the cluster given the name.

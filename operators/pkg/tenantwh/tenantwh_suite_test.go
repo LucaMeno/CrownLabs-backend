@@ -17,11 +17,15 @@ package tenantwh
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net/http"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	admissionv1 "k8s.io/api/admission/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
@@ -65,4 +69,28 @@ func forgeRequest(op admissionv1.Operation, newTenant, oldTenant *clv1alpha2.Ten
 		req.OldObject = serializeTenant(oldTenant)
 	}
 	return req
+}
+
+func forgeResponse(warnings []string, err error) admission.Response {
+	if err != nil {
+		var apiStatus apierrors.APIStatus
+		if errors.As(err, &apiStatus) {
+			sta := apiStatus.Status()
+			return admission.Response{
+				AdmissionResponse: admissionv1.AdmissionResponse{
+					Result: &sta,
+				},
+			}
+		}
+
+		return admission.Response{
+			AdmissionResponse: admissionv1.AdmissionResponse{
+				Result: &metav1.Status{
+					Message: err.Error(),
+					Code:    http.StatusForbidden,
+				},
+			},
+		}
+	}
+	return admission.Allowed("").WithWarnings(warnings...)
 }

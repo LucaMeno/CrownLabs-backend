@@ -46,10 +46,12 @@ var _ = Describe("Validating webhook", func() {
 	}
 
 	var (
-		validatingWH *TenantValidator
-		request      admission.Request
-		response     admission.Response
-		manager      *clv1alpha2.Tenant
+		tnValidator *TenantValidator
+		tnWebhook   *admission.Webhook
+		request     admission.Request
+		response    admission.Response
+		manager     *clv1alpha2.Tenant
+		fakeManager *clv1alpha2.Tenant
 
 		workspaceWA     *clv1alpha1.Workspace
 		workspaceWAName = "test-workspace-withApproval"
@@ -69,6 +71,10 @@ var _ = Describe("Validating webhook", func() {
 					Role: clv1alpha2.Manager,
 				}},
 			},
+		}
+
+		fakeManager = &clv1alpha2.Tenant{
+			ObjectMeta: metav1.ObjectMeta{Name: "some-fake-manager"},
 		}
 
 		workspaceWA = &clv1alpha1.Workspace{
@@ -105,24 +111,33 @@ var _ = Describe("Validating webhook", func() {
 
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
 			manager,
+			fakeManager,
 			workspaceWA,
 			workspaceNA,
 			workspaceIM,
 		).Build()
 
-		validatingWH = MakeTenantValidator(fakeClient, bypassGroups, scheme).Handler.(*TenantValidator)
+		tnValidator = &TenantValidator{
+			TenantWebhook: TenantWebhook{
+				Client:       fakeClient,
+				BypassGroups: bypassGroups,
+			}}
 
-		Expect(validatingWH.decoder).NotTo(BeNil())
+		tnWebhook = admission.WithCustomValidator(
+			scheme,
+			&clv1alpha2.Tenant{},
+			tnValidator,
+		)
 	})
 
 	Describe("The TenantValidator.Handle method", func() {
 		JustBeforeEach(func() {
-			response = validatingWH.Handle(ctx, request)
+			response = tnWebhook.Handle(ctx, request)
 		})
 
 		When("the user is an admin/operator", func() {
 			BeforeEach(func() {
-				request = forgeRequest(admissionv1.Create, nil, nil)
+				request = forgeRequest(admissionv1.Create, &clv1alpha2.Tenant{}, nil)
 				request.UserInfo.Groups = bypassGroups
 			})
 			It("Should admit the request", func() {
@@ -152,14 +167,34 @@ var _ = Describe("Validating webhook", func() {
 			})
 		})
 
-		When("Tenant is being edited by an invalid external user", func() {
+		When("Tenant is being edited by a non-existent user", func() {
 			BeforeEach(func() {
 				request = forgeRequest(admissionv1.Update, &clv1alpha2.Tenant{}, &clv1alpha2.Tenant{})
 				request.UserInfo.Username = "invalid-manager"
 			})
 			It("Should return an error response", func() {
 				Expect(response.Allowed).To(BeFalse())
-				Expect(response.Result.Code).To(BeNumerically("==", http.StatusBadRequest))
+				Expect(response.Result.Code).To(BeNumerically("==", http.StatusNotFound))
+				Expect(response.Result.Message).ToNot(BeEmpty())
+			})
+		})
+
+		When("Tenant is being edited by a non-manager user", func() {
+			BeforeEach(func() {
+				request = forgeRequest(admissionv1.Update, &clv1alpha2.Tenant{
+					Spec: clv1alpha2.TenantSpec{
+						Workspaces: []clv1alpha2.TenantWorkspaceEntry{{
+							Name: testWorkspace,
+							Role: clv1alpha2.User,
+						}},
+					}}, &clv1alpha2.Tenant{})
+				request.UserInfo.Username = fakeManager.Name
+				request.UserInfo.Groups = []string{"other-group"}
+			})
+
+			It("Should return an error response", func() {
+				Expect(response.Allowed).To(BeFalse())
+				Expect(response.Result.Code).To(BeNumerically("==", http.StatusForbidden))
 				Expect(response.Result.Message).ToNot(BeEmpty())
 			})
 		})
@@ -168,7 +203,7 @@ var _ = Describe("Validating webhook", func() {
 	Describe("The TenantValidator.HandleSelfEdit method", func() {
 		var newTenant, oldTenant *clv1alpha2.Tenant
 		JustBeforeEach(func() {
-			response = validatingWH.HandleSelfEdit(ctx, newTenant, oldTenant)
+			response = forgeResponse(tnValidator.HandleSelfEdit(ctx, newTenant, oldTenant))
 		})
 
 		When("only public keys are changed", func() {
@@ -288,7 +323,7 @@ var _ = Describe("Validating webhook", func() {
 		var newTenant, oldTenant *clv1alpha2.Tenant
 		var operation admissionv1.Operation
 		JustBeforeEach(func() {
-			response = validatingWH.HandleWorkspaceEdit(ctx, newTenant, oldTenant, manager, operation)
+			response = forgeResponse(tnValidator.HandleWorkspaceEdit(ctx, newTenant, oldTenant, manager, operation))
 		})
 
 		When("manager adds a workspace he manages", func() {

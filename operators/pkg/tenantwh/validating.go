@@ -18,17 +18,16 @@ package tenantwh
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"reflect"
-	"strings"
 	"time"
 
 	admissionv1 "k8s.io/api/admission/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	clv1alpha1 "github.com/netgroup-polito/CrownLabs/operators/api/v1alpha1"
@@ -40,66 +39,23 @@ import (
 const LastLoginToleration = time.Hour * 24
 
 // TenantValidator validates Tenants.
-type TenantValidator struct{ TenantWebhook }
-
-// MakeTenantValidator creates a new webhook handler suitable for controller runtime based on TenantValidator.
-func MakeTenantValidator(c client.Client, webhookBypassGroups []string) *webhook.Admission {
-	return &webhook.Admission{Handler: &TenantValidator{TenantWebhook{
-		Client:       c,
-		BypassGroups: webhookBypassGroups,
-	}}}
-}
-
-// Handle admits a tenant if user is editing its own tenant or a user is adding/removing workspaces
-// they own to/from another user - this method is used by controller runtime.
-func (tv *TenantValidator) Handle(ctx context.Context, req admission.Request) admission.Response { //nolint:gocritic // the signature of this method is imposed by controller runtime.
-	log := ctrl.LoggerFrom(ctx).WithName("validator").WithValues("username", req.UserInfo.Username, "tenant", req.Name)
-
-	log.V(utils.LogDebugLevel).Info("processing admission request", "groups", strings.Join(req.UserInfo.Groups, ","))
-
-	if tv.CheckWebhookOverride(&req) {
-		log.Info("admitted: successful override")
-		return admission.Allowed("")
-	}
-
-	tenant, err := tv.DecodeTenant(req.Object)
-	if err != nil {
-		log.Error(err, "new tenant decode from request failed")
-		return admission.Errored(http.StatusBadRequest, err)
-	}
-	oldTenant, err := tv.DecodeTenant(req.OldObject)
-	if err != nil && req.Operation != admissionv1.Create {
-		log.Error(err, "previous tenant decode from request failed")
-		return admission.Errored(http.StatusBadRequest, err)
-	}
-
-	if req.UserInfo.Username == req.Name {
-		ctx = ctrl.LoggerInto(ctx, log.WithValues("operation", "self-edit"))
-		return tv.HandleSelfEdit(ctx, tenant, oldTenant)
-	}
-
-	manager, err := tv.GetClusterTenant(ctx, req.UserInfo.Username)
-	if err != nil {
-		log.Error(err, "failed fetching a (manager) tenant associated to the current actor")
-		return admission.Errored(http.StatusBadRequest, fmt.Errorf("could not fetch a tenant for the current user: %w", err))
-	}
-
-	ctx = ctrl.LoggerInto(ctx, log.WithValues("operation", "workspaces-edit"))
-	return tv.HandleWorkspaceEdit(ctx, tenant, oldTenant, manager, req.Operation)
+type TenantValidator struct {
+	TenantWebhook
+	admission.CustomValidator
 }
 
 // HandleSelfEdit checks every field but public keys for changes:
 // - LastLogin must be within a certain tolerance;
 // - Workspaces can be changed only if autoenroll is enabled and within the allowed roles;
 // - Other fields must be unchanged.
-func (tv *TenantValidator) HandleSelfEdit(ctx context.Context, newTenant, oldTenant *clv1alpha2.Tenant) admission.Response {
+func (tv *TenantValidator) HandleSelfEdit(ctx context.Context, newTenant, oldTenant *clv1alpha2.Tenant) (admission.Warnings, error) {
 	log := ctrl.LoggerFrom(ctx)
 	newTenant.Spec.PublicKeys = nil
 	oldTenant.Spec.PublicKeys = nil
 
 	lastLoginDelta := time.Until(newTenant.Spec.LastLogin.Time).Abs()
 	if newTenant.Spec.LastLogin != oldTenant.Spec.LastLogin && lastLoginDelta > LastLoginToleration {
-		return admission.Denied(fmt.Sprintf("unacceptable last login time, must be within +/-%v since local server time: %v", LastLoginToleration, time.Now()))
+		return nil, errors.NewForbidden(schema.GroupResource{}, newTenant.Name, fmt.Errorf("you are not allowed to change the LastLogin field in the owned tenant, or the change is not valid: %s", lastLoginDelta))
 	}
 	newTenant.Spec.LastLogin = metav1.Time{}
 	oldTenant.Spec.LastLogin = metav1.Time{}
@@ -112,7 +68,7 @@ func (tv *TenantValidator) HandleSelfEdit(ctx context.Context, newTenant, oldTen
 
 	if !reflect.DeepEqual(newTenant.Spec, oldTenant.Spec) {
 		log.Info("denied: unexpected tenant spec change")
-		return admission.Denied("only changes to public keys or workspaces that have autoenroll enabled are allowed in the owned tenant")
+		return nil, errors.NewForbidden(schema.GroupResource{}, newTenant.Name, fmt.Errorf("unexpected tenant spec change, only lastLogintime and self-enrolling workspaces are allowed to change"))
 	}
 
 	newTenant.Spec.Workspaces = newWorkspaces
@@ -121,15 +77,15 @@ func (tv *TenantValidator) HandleSelfEdit(ctx context.Context, newTenant, oldTen
 	res, err := tv.checkValidWorkspaces(ctx, newTenant, oldTenant)
 	if err != nil {
 		log.Error(err, "failed to check workspace changes")
-		return admission.Errored(http.StatusInternalServerError, err)
+		return nil, errors.NewInternalError(fmt.Errorf("failed to check workspace changes: %w", err))
 	}
 	if !res {
 		log.Info("denied: workspaces validation failed")
-		return admission.Denied("you have changed workspaces you are not allowed to change")
+		return nil, errors.NewForbidden(schema.GroupResource{}, newTenant.Name, fmt.Errorf("you are not allowed to change your own workspaces"))
 	}
 
 	log.Info("allowed")
-	return admission.Allowed("")
+	return nil, nil
 }
 
 // checkValidWorkspaces checks that the user is not changing workspaces they are not allowed to change.
@@ -169,7 +125,7 @@ func (tv *TenantValidator) checkValidWorkspaces(ctx context.Context, newTenant, 
 }
 
 // HandleWorkspaceEdit checks that changes made to the workspaces have been made by a valid manager, then checks other fields not to have been modified through DeepEqual.
-func (tv *TenantValidator) HandleWorkspaceEdit(ctx context.Context, newTenant, oldTenant, manager *clv1alpha2.Tenant, operation admissionv1.Operation) admission.Response {
+func (tv *TenantValidator) HandleWorkspaceEdit(ctx context.Context, newTenant, oldTenant, manager *clv1alpha2.Tenant, operation admissionv1.Operation) (admission.Warnings, error) {
 	log := ctrl.LoggerFrom(ctx)
 
 	workspacesDiff := CalculateWorkspacesDiff(newTenant, oldTenant)
@@ -178,7 +134,7 @@ func (tv *TenantValidator) HandleWorkspaceEdit(ctx context.Context, newTenant, o
 	for ws, changed := range workspacesDiff {
 		if changed && managerWorkspaces[ws] != clv1alpha2.Manager {
 			log.Info("denied: unexpected tenant spec change", "not-a-manager-for", ws)
-			return admission.Denied("you are not a manager for workspace <" + ws + ">")
+			return nil, errors.NewForbidden(schema.GroupResource{}, newTenant.Name, fmt.Errorf("you are not a manager for workspace %s, so you cannot change it in the tenant", ws))
 		}
 	}
 
@@ -186,11 +142,11 @@ func (tv *TenantValidator) HandleWorkspaceEdit(ctx context.Context, newTenant, o
 	oldTenant.Spec.Workspaces = nil
 	if operation != admissionv1.Create && !reflect.DeepEqual(newTenant.Spec, oldTenant.Spec) {
 		log.Info("denied: unexpected tenant spec change")
-		return admission.Denied("only changes to workspaces are allowed to workspace managers")
+		return nil, errors.NewForbidden(schema.GroupResource{}, newTenant.Name, fmt.Errorf("only changes to workspaces are allowed in the tenant"))
 	}
 
 	log.Info("allowed")
-	return admission.Allowed("")
+	return nil, nil
 }
 
 func calculateWorkspacesOneWayDiff(a, b *clv1alpha2.Tenant, changes map[string]bool) map[string]bool {
@@ -220,71 +176,94 @@ func mapFromWorkspacesList(tenant *clv1alpha2.Tenant) map[string]clv1alpha2.Work
 	return wss
 }
 
+func (tv *TenantValidator) ValidatePreflight(ctx context.Context, newObj, oldObj runtime.Object, op admissionv1.Operation) (newTenant, oldTenant *clv1alpha2.Tenant, warnings admission.Warnings, req admission.Request, newCtx context.Context, stopEarly bool, err error) {
+
+	var ok bool
+	stopEarly = true
+	newTenant, ok = newObj.(*clv1alpha2.Tenant)
+	warnings = admission.Warnings{}
+
+	log := ctrl.LoggerFrom(ctx).WithValues("tenant", newTenant.Name, "operation", op)
+	log.Info("processing admission request")
+	newCtx = ctrl.LoggerInto(ctx, log)
+
+	if !ok {
+		err = fmt.Errorf("expected a Tenant object, got %T", newObj)
+		return
+	}
+
+	if op != admissionv1.Update {
+		oldTenant = &clv1alpha2.Tenant{}
+	} else {
+		oldTenant, ok = oldObj.(*clv1alpha2.Tenant)
+		if !ok && op != admissionv1.Create {
+			err = fmt.Errorf("expected a Tenant object, got %T", oldObj)
+			return
+		}
+	}
+
+	req, err = admission.RequestFromContext(ctx)
+	if err != nil {
+		return
+	}
+
+	if tv.CheckWebhookOverride(&req) {
+		log.Info("admitted: successful override")
+		warnings = append(warnings, "webhook check overridden")
+		return
+	}
+
+	stopEarly = false
+	return
+}
+
 func (tv *TenantValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
 
-	tenant, ok := obj.(*clv1alpha2.Tenant)
-	if !ok {
-		return nil, fmt.Errorf("expected a Tenant object, got %T", obj)
+	tenant, _oldT, warnings, req, ctx, stopEarly, err := tv.ValidatePreflight(ctx, obj, nil, admissionv1.Create)
+	log := ctrl.LoggerFrom(ctx)
+
+	if err != nil {
+		log.Error(err, "failed preflight validation")
+		return warnings, fmt.Errorf("preflight validation failed: %w", err)
+	}
+	if stopEarly {
+		log.Info("skipping validation for create operation")
+		return warnings, nil
 	}
 
-	log := ctrl.LoggerFrom(ctx).WithValues("tenant", tenant.Name, "Operation", "Create")
-
-	if tenant.Spec.LastLogin.IsZero() {
-		tenant.Spec.LastLogin = metav1.Now()
+	manager, err := tv.GetClusterTenant(ctx, req.UserInfo.Username)
+	if err != nil {
+		log.Error(err, "failed fetching a (manager) tenant associated to the current actor")
+		return nil, fmt.Errorf("could not fetch a tenant for the current user: %w", err)
 	}
 
-	if len(tenant.Spec.PublicKeys) == 0 {
-		return nil, fmt.Errorf("at least one public key must be provided")
-	}
-	if len(tenant.Spec.Workspaces) == 0 {
-		return nil, fmt.Errorf("at least one workspace must be provided")
-	}
-
-	log.Info("allowed")
-	return nil, nil
+	return tv.HandleWorkspaceEdit(ctx, tenant, _oldT, manager, req.Operation)
 }
 
 func (tv *TenantValidator) ValidateUpdate(ctx context.Context, newObj, oldObj runtime.Object) (admission.Warnings, error) {
-
-	newTenant, ok := newObj.(*clv1alpha2.Tenant)
-	if !ok {
-		return nil, fmt.Errorf("expected a Tenant object, got %T", newObj)
+	newTenant, oldTenant, warnings, req, ctx, stopEarly, err := tv.ValidatePreflight(ctx, newObj, oldObj, admissionv1.Update)
+	log := ctrl.LoggerFrom(ctx)
+	if err != nil {
+		log.Error(err, "failed preflight validation")
+		return warnings, fmt.Errorf("preflight validation failed: %w", err)
 	}
-	oldTenant, ok := oldObj.(*clv1alpha2.Tenant)
-	if !ok {
-		return nil, fmt.Errorf("expected a Tenant object, got %T", oldObj)
-	}
-
-	log := ctrl.LoggerFrom(ctx).WithValues("tenant", newTenant.Name, "Operation", "Update")
-
-	if newTenant.Spec.LastLogin.IsZero() {
-		newTenant.Spec.LastLogin = metav1.Now()
+	if stopEarly {
+		log.Info("skipping validation for update operation")
+		return warnings, nil
 	}
 
-	if len(newTenant.Spec.PublicKeys) == 0 {
-		return nil, fmt.Errorf("at least one public key must be provided")
-	}
-	if len(newTenant.Spec.Workspaces) == 0 {
-		return nil, fmt.Errorf("at least one workspace must be provided")
-	}
-	if newTenant.Spec.LastLogin != oldTenant.Spec.LastLogin {
-		lastLoginDelta := time.Until(newTenant.Spec.LastLogin.Time).Abs()
-		if lastLoginDelta > LastLoginToleration {
-			return nil, fmt.Errorf("unacceptable last login time, must be within +/-%v since local server time: %v", LastLoginToleration, time.Now())
-		}
-	}
-	newTenant.Spec.LastLogin = metav1.Time{}
-	oldTenant.Spec.LastLogin = metav1.Time{}
-
-	if !reflect.DeepEqual(newTenant.Spec.PublicKeys, oldTenant.Spec.PublicKeys) {
-		return nil, fmt.Errorf("public keys cannot be changed")
-	}
-	if !reflect.DeepEqual(newTenant.Spec.Workspaces, oldTenant.Spec.Workspaces) {
-		return nil, fmt.Errorf("workspaces cannot be changed")
+	if req.UserInfo.Username == req.Name {
+		ctx = ctrl.LoggerInto(ctx, log.WithValues("operation", "self-edit"))
+		return tv.HandleSelfEdit(ctx, newTenant, oldTenant)
 	}
 
-	log.Info("allowed")
-	return nil, nil
+	manager, err := tv.GetClusterTenant(ctx, req.UserInfo.Username)
+	if err != nil {
+		log.Error(err, "failed fetching a (manager) tenant associated to the current actor")
+		return nil, fmt.Errorf("could not fetch a tenant for the current user: %w", err)
+	}
+
+	return tv.HandleWorkspaceEdit(ctx, newTenant, oldTenant, manager, req.Operation)
 }
 
 func (tv *TenantValidator) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
@@ -294,8 +273,6 @@ func (tv *TenantValidator) ValidateDelete(ctx context.Context, obj runtime.Objec
 		return nil, fmt.Errorf("expected a Tenant object, got %T", obj)
 	}
 
-	log := ctrl.LoggerFrom(ctx).WithValues("tenant", tenant.Name, "Operation", "delete")
-
-	log.Info("allowed")
+	ctrl.LoggerFrom(ctx).WithValues("tenant", tenant.Name, "operation", admissionv1.Delete).Info("allowed")
 	return nil, nil
 }
