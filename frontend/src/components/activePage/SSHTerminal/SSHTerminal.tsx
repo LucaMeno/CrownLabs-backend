@@ -3,19 +3,18 @@ import { useParams, useSearchParams } from "react-router-dom";
 import { Terminal } from "xterm";
 import "xterm/css/xterm.css";
 
-
 const hideScrollbarStyle: React.CSSProperties = {
   lineHeight: 1.2,
-  width: '100%',
-  height: '100vh',
-  overflow: 'hidden',
-  scrollbarWidth: 'none', 
-  msOverflowStyle: 'none', 
-  backgroundColor: 'black',
+  width: "100%",
+  height: "100vh",
+  overflow: "hidden",
+  scrollbarWidth: "none",
+  msOverflowStyle: "none",
+  backgroundColor: "black",
 };
 
 const injectGlobalStyle = () => {
-  const style = document.createElement('style');
+  const style = document.createElement("style");
   style.innerHTML = `
     html, body {
       margin: 0;
@@ -40,33 +39,36 @@ const SSHTerminal: React.FC = () => {
 
   useEffect(() => {
     injectGlobalStyle();
-
     if (!containerRef.current) return;
 
+  
     const term = new Terminal({
       cursorBlink: true,
       convertEol: true,
       scrollback: 10000,
-      theme: {
-        background: '#000000',
-      },
+      theme: { background: "#000000" },
     });
     term.open(containerRef.current);
     term.focus();
     termRef.current = term;
 
     const wsProtocol = window.location.protocol === "https:" ? "wss" : "ws";
-    const socket = new WebSocket(
-      `${wsProtocol}://${window.location.host}/api/ssh?namespace=${encodeURIComponent(
-        namespace ?? ""
-      )}&vm=${encodeURIComponent(nomeVM ?? "")}`
-    );
+    const socket = new WebSocket(`${wsProtocol}://${window.location.host}/ws`);
 
-    socket.onmessage = (ev) => term.write(ev.data as string);
     socket.onopen = () => {
-      if (prettyName) term.writeln(`\x1b[1;36m📡 Connecting to: ${prettyName}\x1b[0m`);
+      socket.send(
+        JSON.stringify({
+          namespace: namespace ?? "",
+          vm: nomeVM ?? "",
+        })
+      );
+
+      if (prettyName)
+        term.writeln(`\x1b[1;36m📡 Connecting to: ${prettyName}\x1b[0m`);
       term.writeln("[✔] SSH connection success.\r\n");
     };
+
+    socket.onmessage = (ev) => term.write(ev.data as string);
     socket.onerror = () => term.writeln("[✖] Connection error.\r\n");
     socket.onclose = () => term.writeln("[●] Connection closed.\r\n");
 
@@ -80,15 +82,7 @@ const SSHTerminal: React.FC = () => {
     };
   }, [namespace, nomeVM, prettyName]);
 
-  return (
-    <>
-      <div
-        ref={containerRef}
-        style={hideScrollbarStyle as React.CSSProperties}
-      />
-    </>
-  );
+  return <div ref={containerRef} style={hideScrollbarStyle} />;
 };
-
 
 export default SSHTerminal;
