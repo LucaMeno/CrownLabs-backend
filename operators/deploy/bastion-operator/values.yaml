@@ -76,6 +76,27 @@ service:
   port: 22
   externalTrafficPolicy: Cluster
 
+# WebSSH service configuration
+webSshService:
+  type: ClusterIP
+  port: 8085
+  targetPort: webssh
+
+# Ingress configuration for WebSSH
+ingress:
+  enabled: true
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-production
+    nginx.ingress.kubernetes.io/custom-http-errors: "418"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+    nginx.ingress.kubernetes.io/websocket-services: "{{ include \"bastion-operator.fullname\" . }}-webssh"
+    nginx.ingress.kubernetes.io/proxy-buffer-size: "8k"
+  hostname: crownlabs.polito.it
+  path: /ws
+  pathType: Prefix
+  secret: webssh-certificate
+
 
 sshKeysSecret:
   name: crownlabs-bastion-operator-ssh-keys
@@ -94,4 +115,4 @@ webSshConfig:
   webSshTimeoutDuration: 30 # minutes
   WebSshMaxConCount: 1000
   WebSshVmPort: 22
-  WebSshWebskPort: 8085
+  WebSshWebskPort: 8085 # WebSocket port for WebSSH service

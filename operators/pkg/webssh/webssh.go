@@ -88,7 +88,7 @@ func loadConfig() *config {
 
 	websocketPort := os.Getenv("WEBSSH_WEBSOCKET_PORT")
 	if websocketPort == "" {
-		websocketPort = "8090"
+		websocketPort = "8085"
 		log.Println("WEBSSH_WEBSOCKET_PORT environment variable is not set, using default value: ", websocketPort)
 	}
 
