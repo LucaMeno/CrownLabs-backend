@@ -76,13 +76,11 @@ service:
   port: 22
   externalTrafficPolicy: Cluster
 
-# WebSSH service configuration
 webSshService:
   type: ClusterIP
   port: 8085
   targetPort: webssh
 
-# Ingress configuration for WebSSH
 ingress:
   enabled: true
   annotations:
@@ -115,4 +113,4 @@ webSshConfig:
   webSshTimeoutDuration: 30 # minutes
   WebSshMaxConCount: 1000
   WebSshVmPort: 22
-  WebSshWebskPort: 8085 # WebSocket port for WebSSH service
+  WebSshWebskPort: 8085
