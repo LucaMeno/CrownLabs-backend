@@ -1,7 +1,10 @@
-import React, { useEffect, useRef } from "react";
+import React, { useContext, useEffect, useRef } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { Terminal } from "xterm";
 import "xterm/css/xterm.css";
+import { AuthContext } from '../../../contexts/AuthContext';
+
+const { token } = useContext(AuthContext);
 
 const hideScrollbarStyle: React.CSSProperties = {
   lineHeight: 1.2,
@@ -31,7 +34,7 @@ const injectGlobalStyle = () => {
 };
 
 const SSHTerminal: React.FC = () => {
-  const { namespace, nomeVM } = useParams<{ namespace: string; nomeVM: string }>();
+  const { namespace, name: nomeVM } = useParams<{ namespace: string; name: string }>();
   const [searchParams] = useSearchParams();
   const prettyName = searchParams.get("prettyName") ?? "";
   const containerRef = useRef<HTMLDivElement>(null);
@@ -52,7 +55,7 @@ const SSHTerminal: React.FC = () => {
     term.focus();
     termRef.current = term;
 
-    const wsProtocol = window.location.protocol === "https:" ? "wss" : "ws";
+    const wsProtocol = "wss";
     const socket = new WebSocket(`${wsProtocol}://${window.location.host}/ws`);
 
     socket.onopen = () => {
@@ -60,6 +63,7 @@ const SSHTerminal: React.FC = () => {
         JSON.stringify({
           namespace: namespace ?? "",
           vm: nomeVM ?? "",
+          token: token ?? "",
         })
       );
 

@@ -64,7 +64,7 @@ function App() {
         },
         {
           route: {
-            name: 'SSH Terminal',
+            name: 'Web SSH',
             path: '/ssh/:namespace/:VMname',
           },
           content: <SSHTerminal key="/ssh/:namespace/:VMname" />,
