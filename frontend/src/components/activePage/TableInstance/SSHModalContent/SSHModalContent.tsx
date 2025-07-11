@@ -28,9 +28,7 @@ const SSHModalContent: FC<ISSHModalContentProps> = ({ ...props }) => {
         shape="round"
         onClick={() => {
           window.open(
-            `/ssh/${props.namespace}/${props.name}?prettyName=${encodeURIComponent(
-              props.prettyName ?? ''
-            )}`,
+            `/instance/${props.namespace}/${props.name}/${encodeURIComponent(props.prettyName ?? '')}/ssh`,
             '_blank',
             'noopener,noreferrer'
           );

@@ -116,24 +116,22 @@ const RowInstanceActionsDropdown: FC<IRowInstanceActionsDropdownProps> = ({
             onClick: gui
               ? () => window.open(url!, '_blank')
               : () => setSshModal(true),
-            className: `flex items-center sm:hidden ${
-              !connectDisabled
-                ? extended
-                  ? 'primary-color-fg'
-                  : 'success-color-fg xs:hidden'
-                : 'pointer-events-none'
-            }`,
+            className: `flex items-center sm:hidden ${!connectDisabled
+              ? extended
+                ? 'primary-color-fg'
+                : 'success-color-fg xs:hidden'
+              : 'pointer-events-none'
+              }`,
           },
           persistent
             ? {
-                key: 'persistent',
-                label: menuText,
-                icon: menuIcon,
-                onClick: () => menuAction,
-                className: `flex items-center ${
-                  extended ? ' sm:hidden' : 'xs:hidden'
+              key: 'persistent',
+              label: menuText,
+              icon: menuIcon,
+              onClick: () => menuAction,
+              className: `flex items-center ${extended ? ' sm:hidden' : 'xs:hidden'
                 }`,
-              }
+            }
             : null,
           {
             type: 'divider',
@@ -141,12 +139,32 @@ const RowInstanceActionsDropdown: FC<IRowInstanceActionsDropdownProps> = ({
           },
           {
             key: 'ssh',
-            label: 'SSH',
             icon: <CodeOutlined style={font20px} />,
+            label: (
+              <span className="flex items-center gap-2">
+                <span className={sshDisabled ? 'text-gray-400' : ''}>SSH</span>
+                <ExportOutlined
+                  title="Open terminal"
+                  onClick={(e) => {
+                    if (sshDisabled) return; // blocca il click se disabilitato
+                    e.stopPropagation(); // evita il click principale
+                    window.open(
+                      `/instance/${instance.tenantNamespace}/${instance.name}/${encodeURIComponent(instance.prettyName ?? '')}/ssh`,
+                      '_blank',
+                      'noopener,noreferrer'
+                    );
+
+                  }}
+                  className={
+                    sshDisabled
+                      ? 'text-gray-400 cursor-not-allowed'
+                      : 'cursor-pointer text-blue-400 hover:text-blue-600'
+                  }
+                />
+              </span>
+            ),
             onClick: () => setSshModal(true),
-            className: `flex items-center ${
-              extended ? 'xl:hidden' : ''
-            } ${sshDisabled ? 'pointer-events-none' : ''}`,
+            className: `flex items-center ${extended ? 'xl:hidden' : ''} ${sshDisabled ? 'pointer-events-none' : ''}`,
             disabled: sshDisabled,
           },
           {
@@ -159,7 +177,7 @@ const RowInstanceActionsDropdown: FC<IRowInstanceActionsDropdownProps> = ({
             icon: <FolderOpenOutlined style={font20px} />,
             disabled: fileManagerDisabled,
             className: `flex items-center ${extended ? 'xl:hidden' : ''} `,
-            onClick: () => {},
+            onClick: () => { },
           },
           {
             type: 'divider',
@@ -177,21 +195,19 @@ const RowInstanceActionsDropdown: FC<IRowInstanceActionsDropdownProps> = ({
                   tenantNamespace: tenantNamespace!,
                 },
               }),
-            className: `flex items-center ${
-              extended ? ' sm:hidden' : 'xs:hidden'
-            }`,
+            className: `flex items-center ${extended ? ' sm:hidden' : 'xs:hidden'
+              }`,
           },
         ],
       }}
     >
       <Button
-        className={`${
-          extended
-            ? !sshDisabled || fileManager
-              ? 'xl:hidden'
-              : 'sm:hidden'
-            : ''
-        } flex justify-center items-center`}
+        className={`${extended
+          ? !sshDisabled || fileManager
+            ? 'xl:hidden'
+            : 'sm:hidden'
+          : ''
+          } flex justify-center items-center`}
         color="default"
         type="link"
         shape="circle"
