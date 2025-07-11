@@ -116,6 +116,7 @@ const RowInstanceActionsDropdown: FC<IRowInstanceActionsDropdownProps> = ({
             onClick: gui
               ? () => window.open(url!, '_blank')
               : () => setSshModal(true),
+<<<<<<< HEAD
             className: `flex items-center sm:hidden ${!connectDisabled
               ? extended
                 ? 'primary-color-fg'
@@ -132,6 +133,26 @@ const RowInstanceActionsDropdown: FC<IRowInstanceActionsDropdownProps> = ({
               className: `flex items-center ${extended ? ' sm:hidden' : 'xs:hidden'
                 }`,
             }
+=======
+            className: `flex items-center sm:hidden ${
+              !connectDisabled
+                ? extended
+                  ? 'primary-color-fg'
+                  : 'success-color-fg xs:hidden'
+                : 'pointer-events-none'
+            }`,
+          },
+          persistent
+            ? {
+                key: 'persistent',
+                label: menuText,
+                icon: menuIcon,
+                onClick: () => menuAction,
+                className: `flex items-center ${
+                  extended ? ' sm:hidden' : 'xs:hidden'
+                }`,
+              }
+>>>>>>> b56e561c990780d641633ed421940642c86099f4
             : null,
           {
             type: 'divider',
@@ -139,6 +160,7 @@ const RowInstanceActionsDropdown: FC<IRowInstanceActionsDropdownProps> = ({
           },
           {
             key: 'ssh',
+<<<<<<< HEAD
             icon: <CodeOutlined style={font20px} />,
             label: (
               <span className="flex items-center gap-2">
@@ -165,6 +187,14 @@ const RowInstanceActionsDropdown: FC<IRowInstanceActionsDropdownProps> = ({
             ),
             onClick: () => setSshModal(true),
             className: `flex items-center ${extended ? 'xl:hidden' : ''} ${sshDisabled ? 'pointer-events-none' : ''}`,
+=======
+            label: 'SSH',
+            icon: <CodeOutlined style={font20px} />,
+            onClick: () => setSshModal(true),
+            className: `flex items-center ${
+              extended ? 'xl:hidden' : ''
+            } ${sshDisabled ? 'pointer-events-none' : ''}`,
+>>>>>>> b56e561c990780d641633ed421940642c86099f4
             disabled: sshDisabled,
           },
           {
@@ -177,7 +207,11 @@ const RowInstanceActionsDropdown: FC<IRowInstanceActionsDropdownProps> = ({
             icon: <FolderOpenOutlined style={font20px} />,
             disabled: fileManagerDisabled,
             className: `flex items-center ${extended ? 'xl:hidden' : ''} `,
+<<<<<<< HEAD
             onClick: () => { },
+=======
+            onClick: () => {},
+>>>>>>> b56e561c990780d641633ed421940642c86099f4
           },
           {
             type: 'divider',
@@ -195,19 +229,35 @@ const RowInstanceActionsDropdown: FC<IRowInstanceActionsDropdownProps> = ({
                   tenantNamespace: tenantNamespace!,
                 },
               }),
+<<<<<<< HEAD
             className: `flex items-center ${extended ? ' sm:hidden' : 'xs:hidden'
               }`,
+=======
+            className: `flex items-center ${
+              extended ? ' sm:hidden' : 'xs:hidden'
+            }`,
+>>>>>>> b56e561c990780d641633ed421940642c86099f4
           },
         ],
       }}
     >
       <Button
+<<<<<<< HEAD
         className={`${extended
           ? !sshDisabled || fileManager
             ? 'xl:hidden'
             : 'sm:hidden'
           : ''
           } flex justify-center items-center`}
+=======
+        className={`${
+          extended
+            ? !sshDisabled || fileManager
+              ? 'xl:hidden'
+              : 'sm:hidden'
+            : ''
+        } flex justify-center items-center`}
+>>>>>>> b56e561c990780d641633ed421940642c86099f4
         color="default"
         type="link"
         shape="circle"
