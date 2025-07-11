@@ -65,19 +65,11 @@ function App() {
         {
           route: {
             name: 'Web SSH',
-<<<<<<< HEAD
             path: '/instance/:namespace/:VMname/:prettyName/ssh',
           },
           content: <SSHTerminal key="/app/instance/:namespace/:VMname/:prettyName/ssh" />,
           linkPosition: LinkPosition.Hidden,
         }
-=======
-            path: '/ssh/:namespace/:VMname',
-          },
-          content: <SSHTerminal key="/ssh/:namespace/:VMname" />,
-          linkPosition: LinkPosition.Hidden,
-        },
->>>>>>> b56e561c990780d641633ed421940642c86099f4
       ]}
     />
   );
